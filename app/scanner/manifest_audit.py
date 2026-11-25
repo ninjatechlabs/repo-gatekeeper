@@ -77,7 +77,8 @@ PROMPT_INJECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 
 INVISIBLE_UNICODE_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u202a-\u202e\u2060-\u2064]")
 SENSITIVE_PATHS_RE = re.compile(r"(?:~|/home/[^/]+|%USERPROFILE%)/(?:\.ssh|\.aws|\.gnupg|\.kube)|/etc/passwd|/etc/shadow")
-OUTBOUND_HTTP_RE = re.compile(r"\b(?:requests\.(?:post|put|get)|urllib\.request|httpx\.|aiohttp\.|http\.client|curl\s|Invoke-WebRequest)\b")
+OUTBOUND_HTTP_CALL_PREFIXES = ("requests.", "urllib.request.", "httpx.", "aiohttp.", "http.client.")
+BIND_ALL_INTERFACES_RE = re.compile(r"""(?:host\s*=\s*['"]0\.0\.0\.0['"]|--host(?:=|\s+)0\.0\.0\.0|bind\s*[:=]\s*['"]0\.0\.0\.0)""")
 
 
 def _rel(path: Path, root: Path) -> str:
@@ -274,8 +275,16 @@ def _inspect_python_file(path: Path, root: Path) -> list[Finding]:
     except SyntaxError:
         tree = None
 
+    has_outbound_http = False
+    has_sensitive_path_literal = False
+
     if tree is not None:
         for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                # Ignore long prompt/documentation strings and regex-like patterns
+                if len(node.value) <= 200 and "(?:" not in node.value and SENSITIVE_PATHS_RE.search(node.value):
+                    has_sensitive_path_literal = True
+
             if isinstance(node, ast.Call):
                 call_name = ""
                 if isinstance(node.func, ast.Name):
@@ -289,6 +298,9 @@ def _inspect_python_file(path: Path, root: Path) -> list[Finding]:
                     if isinstance(cur, ast.Name):
                         parts.append(cur.id)
                     call_name = ".".join(reversed(parts))
+
+                if call_name.startswith(OUTBOUND_HTTP_CALL_PREFIXES):
+                    has_outbound_http = True
 
                 if call_name in ("eval", "exec"):
                     findings.append(
@@ -335,7 +347,7 @@ def _inspect_python_file(path: Path, root: Path) -> list[Finding]:
                                 )
                             )
 
-    if SENSITIVE_PATHS_RE.search(text) and OUTBOUND_HTTP_RE.search(text):
+    if has_sensitive_path_literal and has_outbound_http:
         findings.append(
             Finding(
                 id=f"py-exfil-{uuid.uuid4().hex[:8]}",
@@ -350,7 +362,10 @@ def _inspect_python_file(path: Path, root: Path) -> list[Finding]:
         )
 
     for lineno, line in enumerate(text.splitlines(), start=1):
-        if "0.0.0.0" in line and any(k in line.lower() for k in ("host", "bind", "listen", "run(", "uvicorn")):
+        stripped = line.strip()
+        if stripped.startswith("#") or "re.compile" in stripped:
+            continue
+        if BIND_ALL_INTERFACES_RE.search(stripped):
             findings.append(
                 Finding(
                     id=f"net-bind-{uuid.uuid4().hex[:8]}",
@@ -361,7 +376,7 @@ def _inspect_python_file(path: Path, root: Path) -> list[Finding]:
                     description="Service binds to 0.0.0.0, exposing it on all network interfaces.",
                     file_path=rel_path,
                     line_number=lineno,
-                    snippet=line.strip()[:200],
+                    snippet=stripped[:200],
                     remediation="Bind to 127.0.0.1 for local-only use or ensure authentication is enabled.",
                 )
             )
