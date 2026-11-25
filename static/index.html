@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Repo Gatekeeper — Zero-Trust GitHub Auditor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased">
+  <div x-data="gatekeeperApp()" x-init="init()" class="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+
+    <!-- Top Bar -->
+    <header class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-slate-800 pb-4">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-lg bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold text-lg">
+          G
+        </div>
+        <div>
+          <h1 class="text-xl font-semibold tracking-tight text-white">Repo Gatekeeper</h1>
+          <p class="text-xs text-slate-400">Zero-Trust Pre-Installation Security Auditor</p>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3">
+        <!-- LLM Status Pill -->
+        <button
+          @click="showLlmSettings = !showLlmSettings"
+          class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition"
+          :class="llmConnected
+            ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/20'
+            : 'bg-amber-500/10 border-amber-500/40 text-amber-300 hover:bg-amber-500/20'"
+        >
+          <span class="w-2 h-2 rounded-full" :class="llmConnected ? 'bg-emerald-400' : 'bg-amber-400'"></span>
+          <span x-text="llmConnected ? 'Local LLM Connected' : 'LLM Unreachable (Deterministic Mode)'"></span>
+          <span class="text-slate-400">⚙</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Collapsible LLM Settings -->
+    <section x-show="showLlmSettings" x-cloak class="bg-slate-900 border border-slate-800 rounded-xl p-4 grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">LLM_BASE_URL (OpenAI-compatible)</label>
+        <input type="text" x-model="llmBaseUrl" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500" />
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">LLM_MODEL</label>
+        <input type="text" x-model="llmModel" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500" />
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">LLM_API_KEY (optional)</label>
+        <input type="password" x-model="llmApiKey" placeholder="ollama or OmniRoute key" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500" />
+      </div>
+      <div class="flex flex-col justify-end gap-1.5">
+        <button type="button" @click="checkLlmHealth(false)" :disabled="testingLlm" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 rounded-lg text-sm font-medium border border-slate-700 transition">
+          <span x-text="testingLlm ? 'Testing...' : 'Test Connection'"></span>
+        </button>
+        <span x-show="llmTestMessage" x-text="llmTestMessage" class="text-[11px]" :class="llmConnected ? 'text-emerald-400' : 'text-amber-400'"></span>
+      </div>
+    </section>
+
+    <!-- Scan Input Box -->
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <form @submit.prevent="startScan()" class="flex flex-col sm:flex-row gap-3">
+        <input
+          type="url"
+          x-model="repoUrl"
+          placeholder="https://github.com/owner/repository"
+          required
+          class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+        />
+        <button
+          type="submit"
+          :disabled="isScanning"
+          class="px-6 py-3 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-2"
+          :class="isScanning ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-500 text-white'"
+        >
+          <span x-show="isScanning" class="animate-spin inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full"></span>
+          <span x-text="isScanning ? 'Auditing...' : 'Run Security Audit'"></span>
+        </button>
+      </form>
+      <p x-show="errorMsg" x-text="errorMsg" x-cloak class="mt-3 text-sm text-rose-400"></p>
+    </section>
+
+    <!-- Live Progress Tracker -->
+    <section x-show="scan" x-cloak class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Audit Pipeline</h2>
+        <span class="text-xs text-slate-400 font-mono" x-text="scan ? scan.repo_name : ''"></span>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-5 gap-3">
+        <template x-for="stage in (scan?.stages || [])" :key="stage.key">
+          <div class="p-3 rounded-lg border text-xs transition"
+               :class="{
+                 'bg-slate-950 border-slate-800 text-slate-500': stage.status === 'pending',
+                 'bg-sky-950/40 border-sky-500/50 text-sky-200': stage.status === 'running',
+                 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200': stage.status === 'completed',
+                 'bg-amber-950/30 border-amber-500/40 text-amber-200': stage.status === 'skipped',
+                 'bg-rose-950/40 border-rose-500/50 text-rose-200': stage.status === 'failed'
+               }">
+            <div class="font-semibold flex items-center justify-between gap-1">
+              <span x-text="stage.label"></span>
+              <span x-show="stage.status === 'running'" class="animate-pulse">●</span>
+              <span x-show="stage.status === 'completed'">✓</span>
+              <span x-show="stage.status === 'skipped'">↷</span>
+              <span x-show="stage.status === 'failed'">✕</span>
+            </div>
+            <div class="mt-1 text-[11px] opacity-80 truncate" x-text="stage.detail || stage.status"></div>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- Results View -->
+    <template x-if="scan && scan.status === 'completed'">
+      <div class="space-y-6">
+
+        <!-- Verdict Banner & Actions -->
+        <section class="rounded-xl p-6 border flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4"
+                 :class="{
+                   'bg-emerald-950/30 border-emerald-500/50': scan.verdict === 'SAFE TO INSTALL',
+                   'bg-amber-950/30 border-amber-500/50': scan.verdict === 'SAFE WITH MODIFICATIONS',
+                   'bg-rose-950/30 border-rose-500/50': scan.verdict === 'DO NOT INSTALL'
+                 }">
+          <div>
+            <div class="text-xs uppercase tracking-wider font-semibold opacity-75">Final Security Verdict</div>
+            <div class="text-2xl sm:text-3xl font-bold mt-1"
+                 :class="{
+                   'text-emerald-400': scan.verdict === 'SAFE TO INSTALL',
+                   'text-amber-400': scan.verdict === 'SAFE WITH MODIFICATIONS',
+                   'text-rose-400': scan.verdict === 'DO NOT INSTALL'
+                 }"
+                 x-text="scan.verdict"></div>
+            <p x-show="scan.llm_summary" class="text-sm text-slate-300 mt-2 max-w-3xl" x-text="scan.llm_summary"></p>
+          </div>
+
+          <div class="flex flex-wrap gap-2">
+            <a :href="`/api/scans/${scan.scan_id}/report.md`"
+               class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-medium text-slate-200 transition">
+              Download .md
+            </a>
+            <a :href="`/api/scans/${scan.scan_id}/report.json`"
+               class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-medium text-slate-200 transition">
+              Download JSON
+            </a>
+            <button @click="exportCleanRepo()"
+                    :disabled="exporting"
+                    class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition">
+              <span x-text="exporting ? 'Exporting...' : 'Approve & Export Clean Repo'"></span>
+            </button>
+          </div>
+        </section>
+
+        <!-- Export confirmation -->
+        <div x-show="scan.exported_path" x-cloak class="bg-emerald-950/40 border border-emerald-500/40 rounded-lg px-4 py-3 text-sm text-emerald-300">
+          Clean repository (with <code class="font-mono">.git</code> stripped) exported to:
+          <code class="font-mono font-semibold" x-text="scan.exported_path"></code>
+        </div>
+
+        <!-- 8-Domain Status Grid -->
+        <section>
+          <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">8-Domain Security Matrix</h2>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <template x-for="d in scan.domains" :key="d.domain">
+              <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+                <div class="flex items-start justify-between gap-2">
+                  <span class="text-sm font-medium text-slate-200 leading-snug" x-text="d.domain"></span>
+                  <span class="px-2 py-0.5 rounded text-[11px] font-bold shrink-0"
+                        :class="{
+                          'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30': d.status === 'PASS',
+                          'bg-amber-500/15 text-amber-400 border border-amber-500/30': d.status === 'WARN',
+                          'bg-rose-500/15 text-rose-400 border border-rose-500/30': d.status === 'FAIL'
+                        }"
+                        x-text="d.status"></span>
+                </div>
+                <div class="mt-3 flex items-center gap-2 text-xs text-slate-400">
+                  <span x-text="`${d.total} findings`"></span>
+                  <template x-if="d.critical > 0"><span class="text-rose-400 font-semibold" x-text="`${d.critical}C`"></span></template>
+                  <template x-if="d.high > 0"><span class="text-orange-400 font-semibold" x-text="`${d.high}H`"></span></template>
+                  <template x-if="d.medium > 0"><span class="text-amber-400" x-text="`${d.medium}M`"></span></template>
+                </div>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <!-- Detailed Findings Table -->
+        <section class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <h2 class="text-sm font-semibold text-slate-200">
+              Detailed Findings (<span x-text="filteredFindings().length"></span>)
+            </h2>
+            <div class="flex flex-wrap gap-1.5">
+              <template x-for="sev in ['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']" :key="sev">
+                <button @click="severityFilter = sev"
+                        class="px-2.5 py-1 rounded text-xs font-medium transition"
+                        :class="severityFilter === sev ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'"
+                        x-text="sev"></button>
+              </template>
+            </div>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-950 text-slate-400 uppercase border-b border-slate-800">
+                <tr>
+                  <th class="px-4 py-3">Severity</th>
+                  <th class="px-4 py-3">Domain / Source</th>
+                  <th class="px-4 py-3">Location</th>
+                  <th class="px-4 py-3">Finding & Snippet</th>
+                  <th class="px-4 py-3">Remediation</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/80">
+                <template x-if="filteredFindings().length === 0">
+                  <tr>
+                    <td colspan="5" class="px-4 py-8 text-center text-slate-500">
+                      No findings match the selected severity filter.
+                    </td>
+                  </tr>
+                </template>
+                <template x-for="f in filteredFindings()" :key="f.id">
+                  <tr class="hover:bg-slate-800/40 align-top">
+                    <td class="px-4 py-3 whitespace-nowrap">
+                      <span class="px-2 py-0.5 rounded font-bold text-[11px]"
+                            :class="{
+                              'bg-rose-500/20 text-rose-300 border border-rose-500/40': f.severity === 'CRITICAL',
+                              'bg-orange-500/20 text-orange-300 border border-orange-500/40': f.severity === 'HIGH',
+                              'bg-amber-500/20 text-amber-300 border border-amber-500/40': f.severity === 'MEDIUM',
+                              'bg-sky-500/20 text-sky-300 border border-sky-500/40': f.severity === 'LOW',
+                              'bg-slate-700 text-slate-300': f.severity === 'INFO'
+                            }"
+                            x-text="f.severity"></span>
+                    </td>
+                    <td class="px-4 py-3 min-w-[180px]">
+                      <div class="text-slate-200 font-medium" x-text="f.domain"></div>
+                      <div class="text-slate-500 font-mono mt-0.5" x-text="f.source"></div>
+                    </td>
+                    <td class="px-4 py-3 font-mono text-slate-300 max-w-[200px] break-all">
+                      <span x-text="f.file_path ? (f.file_path + (f.line_number ? ':' + f.line_number : '')) : '—'"></span>
+                    </td>
+                    <td class="px-4 py-3 max-w-md">
+                      <div class="font-semibold text-slate-100" x-text="f.title"></div>
+                      <div class="text-slate-400 mt-0.5" x-text="f.description"></div>
+                      <template x-if="f.snippet">
+                        <pre class="mt-1.5 p-2 rounded bg-slate-950 border border-slate-800 text-[11px] text-amber-200 overflow-x-auto whitespace-pre-wrap" x-text="f.snippet"></pre>
+                      </template>
+                    </td>
+                    <td class="px-4 py-3 text-slate-300 max-w-xs" x-text="f.remediation"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+      </div>
+    </template>
+  </div>
+
+  <script>
+    function gatekeeperApp() {
+      return {
+        repoUrl: '',
+        llmBaseUrl: 'http://host.docker.internal:11434/v1',
+        llmModel: 'qwen2.5-coder:7b',
+        llmApiKey: '',
+        llmConnected: false,
+        testingLlm: false,
+        llmTestMessage: '',
+        showLlmSettings: false,
+        isScanning: false,
+        exporting: false,
+        errorMsg: '',
+        scan: null,
+        pollTimer: null,
+        severityFilter: 'ALL',
+
+        async init() {
+          await this.checkLlmHealth(true);
+        },
+
+        async checkLlmHealth(useDefaults = false) {
+          this.testingLlm = true;
+          if (!useDefaults) this.llmTestMessage = 'Checking...';
+          try {
+            const params = new URLSearchParams();
+            if (!useDefaults) {
+              params.set('llm_base_url', this.llmBaseUrl);
+              if (this.llmModel) params.set('llm_model', this.llmModel);
+              if (this.llmApiKey) params.set('llm_api_key', this.llmApiKey);
+            }
+            const url = useDefaults ? '/api/config' : `/api/config?${params.toString()}`;
+            const res = await fetch(url);
+            const data = await res.json();
+            if (useDefaults) {
+              this.llmBaseUrl = data.llm_base_url;
+              this.llmModel = data.llm_model;
+            }
+            this.llmConnected = !!data.llm_connected;
+            if (!useDefaults) {
+              this.llmTestMessage = this.llmConnected
+                ? `Connected (${(data.llm_models || []).length} models)`
+                : `Unreachable: ${data.llm_error || 'connection failed'}`;
+            }
+          } catch (e) {
+            this.llmConnected = false;
+            if (!useDefaults) this.llmTestMessage = `Error: ${e.message}`;
+          } finally {
+            this.testingLlm = false;
+          }
+        },
+
+        async startScan() {
+          this.errorMsg = '';
+          this.isScanning = true;
+          this.scan = null;
+          if (this.pollTimer) clearInterval(this.pollTimer);
+
+          try {
+            const res = await fetch('/api/scans', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                repo_url: this.repoUrl,
+                llm_base_url: this.llmBaseUrl,
+                llm_model: this.llmModel,
+                llm_api_key: this.llmApiKey || null,
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              throw new Error(data.detail || 'Failed to start scan');
+            }
+            this.scan = data;
+            this.pollTimer = setInterval(() => this.pollScan(data.scan_id), 1500);
+          } catch (err) {
+            this.errorMsg = err.message;
+            this.isScanning = false;
+          }
+        },
+
+        async pollScan(scanId) {
+          try {
+            const res = await fetch(`/api/scans/${scanId}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            this.scan = data;
+            if (data.status === 'completed' || data.status === 'failed') {
+              clearInterval(this.pollTimer);
+              this.pollTimer = null;
+              this.isScanning = false;
+              if (data.status === 'failed' && data.error) {
+                this.errorMsg = data.error;
+              }
+            }
+          } catch {
+            // keep polling on transient network blip
+          }
+        },
+
+        filteredFindings() {
+          if (!this.scan || !this.scan.findings) return [];
+          if (this.severityFilter === 'ALL') return this.scan.findings;
+          return this.scan.findings.filter(f => f.severity === this.severityFilter);
+        },
+
+        async exportCleanRepo() {
+          if (!this.scan) return;
+          this.exporting = true;
+          this.errorMsg = '';
+          try {
+            const res = await fetch(`/api/scans/${this.scan.scan_id}/export`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Export failed');
+            this.scan.exported_path = data.exported_path;
+          } catch (err) {
+            this.errorMsg = err.message;
+          } finally {
+            this.exporting = false;
+          }
+        },
+      };
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+services:
+  repo-gatekeeper:
+    build: .
+    container_name: repo-gatekeeper
+    ports:
+      - "${GATEKEEPER_PORT:-8088}:8088"
+    environment:
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      - LLM_MODEL=${LLM_MODEL:-qwen2.5-coder:7b}
+      - LLM_API_KEY=${LLM_API_KEY:-ollama}
+      - GATEKEEPER_SCAN_DIR=/tmp/gatekeeper_scans
+      - GATEKEEPER_APPROVED_DIR=/app/approved_repos
+      - SEMGREP_SEND_METRICS=off
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./approved_repos:/app/approved_repos
+    restart: unless-stopped
